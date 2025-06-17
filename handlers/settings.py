@@ -10,7 +10,7 @@ from database.db import (
     get_all_user_files, get_paginated_files, search_user_files
 )
 # This import is now corrected to use the proper function names from helpers.py
-from utils.helpers import go_back_button, get_main_menu, create_post, extract_base_name_and_year, calculate_title_similarity
+from utils.helpers import go_back_button, get_main_menu, create_post, get_clean_title_and_year, calculate_title_similarity
 
 logger = logging.getLogger(__name__)
 ACTIVE_BACKUP_TASKS = set()
@@ -152,13 +152,13 @@ async def start_backup_process(client, query):
         for doc in all_file_docs:
             if not doc.get('file_name'): continue
             
-            doc_base_name, _ = extract_base_name_and_year(doc['file_name'])
-            if not doc_base_name: continue
+            doc_clean_title, _ = get_clean_title_and_year(doc['file_name'])
+            if not doc_clean_title: continue
 
             added = False
             for batch in batches:
-                batch_base_name, _ = extract_base_name_and_year(batch[0]['file_name'])
-                if calculate_title_similarity(doc_base_name, batch_base_name) > 0.90:
+                batch_clean_title, _ = get_clean_title_and_year(batch[0]['file_name'])
+                if calculate_title_similarity(doc_clean_title, batch_clean_title) > 0.90:
                     batch.append(doc)
                     added = True
                     break

@@ -7,81 +7,78 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
-def generate_search_queries(title: str):
-    """Generates a list of progressively shorter search queries from a title."""
-    words = title.split()
-    queries = []
-    # Generate queries from the full title down to 2 words
-    for i in range(len(words), max(0, min(1, len(words)) - 1), -1):
-        if i > 0:
-            queries.append(' '.join(words[:i]))
-    return list(dict.fromkeys(queries))
-
 async def _find_poster_from_imdb(query: str):
-    """Internal function to get the best-guess poster from IMDb for a single query."""
+    """Finds a poster and its unique IMDb ID (e.g., tt12345)."""
     try:
         search_url = f"https://www.imdb.com/find?q={re.sub(r'\s+', '+', query)}"
         headers = {'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'en-US,en;q=0.5'}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(search_url, timeout=10) as resp:
-                if resp.status != 200: return None
+        async with aiohttp.ClientSession(headers=headers) as s:
+            async with s.get(search_url, timeout=10) as resp:
+                if resp.status != 200: return None, None
                 soup = BeautifulSoup(await resp.text(), 'html.parser')
-                result_link = soup.select_one("a.ipc-metadata-list-summary-item__t")
-                if not result_link or not result_link.get('href'): return None
+                result = soup.select_one("a.ipc-metadata-list-summary-item__t")
+                if not result or not result.get('href'): return None, None
                 
-                movie_url = "https://www.imdb.com" + result_link['href'].split('?')[0]
-                async with session.get(movie_url, timeout=10) as movie_resp:
-                    if movie_resp.status != 200: return None
+                imdb_id_match = re.search(r'/title/(tt\d+)/', result['href'])
+                if not imdb_id_match: return None, None
+                imdb_id = imdb_id_match.group(1)
+                
+                movie_url = f"https://www.imdb.com/title/{imdb_id}/"
+                async with s.get(movie_url, timeout=10) as movie_resp:
+                    if movie_resp.status != 200: return None, None
                     movie_soup = BeautifulSoup(await movie_resp.text(), 'html.parser')
-                    img_tag = movie_soup.select_one('div[data-testid="hero-media__poster"] img.ipc-image')
-                    if img_tag and img_tag.get('src'):
-                        return img_tag['src'].split('_V1_')[0] + "_V1_FMjpg_UX1000_.jpg"
-    except Exception:
-        return None
-    return None
+                    img = movie_soup.select_one('div[data-testid="hero-media__poster"] img.ipc-image')
+                    if img and img.get('src'):
+                        poster_url = img['src'].split('_V1_')[0] + "_V1_FMjpg_UX1000_.jpg"
+                        return poster_url, f"imdb-{imdb_id}"
+    except Exception: pass
+    return None, None
 
 async def _find_poster_from_tmdb(query: str, year: str = None):
-    """Internal function to get the best-guess poster from TMDB for a single query."""
-    if not Config.TMDB_API_KEY: return None
+    """Finds a poster and its unique TMDB ID (e.g., tv-12345 or movie-12345)."""
+    if not Config.TMDB_API_KEY: return None, None
     try:
-        search_url = "https://api.themoviedb.org/3/search/multi"
         params = {"api_key": Config.TMDB_API_KEY, "query": query, "include_adult": "false"}
         if year: params['year'] = year
-        async with aiohttp.ClientSession() as session:
-            async with session.get(search_url, params=params, timeout=10) as resp:
-                if resp.status != 200: return None
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://api.themoviedb.org/3/search/multi", params=params, timeout=10) as resp:
+                if resp.status != 200: return None, None
                 data = await resp.json()
-                if data.get('results') and data['results'][0].get("poster_path"):
-                    return f"https://image.tmdb.org/t/p/w500{data['results'][0]['poster_path']}"
-    except Exception:
-        return None
-    return None
+                if data.get('results'):
+                    # Find the most relevant result (often the first one with a poster)
+                    for res in data.get('results', []):
+                        if res.get("poster_path"):
+                            poster_url = f"https://image.tmdb.org/t/p/w500{res['poster_path']}"
+                            tmdb_id = f"{res.get('media_type', 'none')}-{res.get('id', 'none')}"
+                            return poster_url, f"tmdb-{tmdb_id}"
+    except Exception: pass
+    return None, None
+
+async def _get_poster_and_id(base_name: str, year: str = None):
+    """The core waterfall search engine, now returns both URL and a stable ID."""
+    logger.info(f"Poster Search: Starting for base_name='{base_name}', year='{year}'")
+    
+    # Using a simple waterfall search for reliability
+    if year:
+        url, pid = await _find_poster_from_imdb(f"{base_name} {year}")
+        if url: return url, pid
+    url, pid = await _find_poster_from_imdb(base_name)
+    if url: return url, pid
+    if year:
+        url, pid = await _find_poster_from_tmdb(base_name, year)
+        if url: return url, pid
+    url, pid = await _find_poster_from_tmdb(base_name)
+    if url: return url, pid
+    
+    logger.error(f"Poster Search: All attempts failed for base name '{base_name}'.")
+    return None, None
+
+async def get_poster_id(base_name: str, year: str = None):
+    """Public function that returns only the UNIQUE ID of the found poster for batching."""
+    _, poster_id = await _get_poster_and_id(base_name, year)
+    return poster_id
 
 async def get_poster(base_name: str, year: str = None):
-    """
-    The definitive 'waterfall' poster finder. It uses the clean base_name 
-    to generate multiple search queries for the highest accuracy.
-    """
-    
-    search_queries = generate_search_queries(base_name)
-    logger.info(f"Waterfall Poster Search: Starting for '{base_name}'. Queries: {search_queries}")
-
-    for sq in search_queries:
-        logger.info(f"Trying query: '{sq}'...")
-        
-        # --- IMDb First (User Preference) ---
-        if year:
-            if poster := await _find_poster_from_imdb(f"{sq} {year}"):
-                logger.info(f"SUCCESS: IMDb with year for '{sq}'"); return poster
-        if poster := await _find_poster_from_imdb(sq):
-            logger.info(f"SUCCESS: IMDb without year for '{sq}'"); return poster
-        
-        # --- TMDB Second (API Fallback) ---
-        if year:
-            if poster := await _find_poster_from_tmdb(sq, year):
-                logger.info(f"SUCCESS: TMDB with year for '{sq}'"); return poster
-        if poster := await _find_poster_from_tmdb(sq):
-            logger.info(f"SUCCESS: TMDB without year for '{sq}'"); return poster
-
-    logger.error(f"Waterfall Search: All attempts failed for base name '{base_name}'.")
-    return None
+    """Public function that returns only the POSTER URL for posting."""
+    poster_url, _ = await _get_poster_and_id(base_name, year)
+    return poster_url

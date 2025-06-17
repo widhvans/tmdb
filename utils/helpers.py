@@ -16,7 +16,7 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
 def clean_filename(name: str):
-    """The master function to clean filenames, now with more tags."""
+    """The master function to clean filenames for poster searching and batching."""
     if not name: return "Untitled", None
     
     cleaned_name = re.sub(r'\.\w+$', '', name)
@@ -28,13 +28,7 @@ def clean_filename(name: str):
     year = year_match.group(0) if year_match else None
     if year: cleaned_name = cleaned_name.replace(year, '')
         
-    # More tags added based on examples for better cleaning
-    tags = [
-        '10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin',
-        '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 
-        'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', 
-        r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES'
-    ]
+    tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES']
     for tag in tags:
         cleaned_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_name, flags=re.I)
     
@@ -47,14 +41,19 @@ async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return []
 
-    # The title of the first message in the batch determines the primary title
-    primary_title, year = clean_filename(getattr(messages[0].media, messages[0].media.value).file_name)
+    # FIXED: Correctly get the media object from the message, not message.media
+    first_media_obj = getattr(messages[0], messages[0].media.value, None)
+    if not first_media_obj: return []
+    primary_title, year = clean_filename(first_media_obj.file_name)
     
     # Sort by similarity to the primary title, then by natural filename sort
     def similarity_sorter(msg):
-        title, _ = clean_filename(getattr(msg.media, msg.media.value).file_name)
+        # FIXED: Correctly get the media object for comparison
+        media_obj = getattr(msg, msg.media.value, None)
+        if not media_obj: return (1.0, "")
+        title, _ = clean_filename(media_obj.file_name)
         similarity_score = 1.0 - calculate_title_similarity(primary_title, title)
-        natural_key = natural_sort_key(getattr(msg.media, msg.media.value).file_name)
+        natural_key = natural_sort_key(media_obj.file_name)
         return (similarity_score, natural_key)
 
     messages.sort(key=similarity_sorter)
@@ -66,7 +65,10 @@ async def create_post(client, user_id, messages):
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        media = messages[0].media
+        # FIXED: Correctly get the media object
+        media = getattr(messages[0], messages[0].media.value, None)
+        if not media: return []
+
         file_label, _ = clean_filename(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label or media.file_name}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
@@ -77,17 +79,20 @@ async def create_post(client, user_id, messages):
         for i in range(num_posts):
             chunk = messages[i*FILES_PER_POST:(i+1)*FILES_PER_POST]
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
-            
             links = []
             for m in chunk:
-                label, _ = clean_filename(m.media.file_name)
-                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id}"
-                links.append(f"📁 `{label or m.media.file_name}` - [Click Here]({link})")
+                # FIXED: Correctly get the media object
+                media = getattr(m, m.media.value, None)
+                if not media: continue
+                label, _ = clean_filename(media.file_name)
+                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
+                links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
             
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
+# --- (The rest of the helper functions are unchanged) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

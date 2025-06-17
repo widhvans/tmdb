@@ -11,17 +11,37 @@ logger = logging.getLogger(__name__)
 file_batch = {}
 batch_locks = {}
 
-# (The get_batch_key function is unchanged)
 def get_batch_key(filename: str):
+    """A more robust function to generate a batch key for merging posts."""
+    if not filename: return None
+    
+    # Remove file extension
     name = re.sub(r'\.\w+$', '', filename)
-    name = re.sub(r'[\._]', ' ', name)
-    delimiters = [
-        r'S\d{1,2}', r'Season\s?\d{1,2}', r'Part\s?\d{1,2}', r'E\d{1,3}', r'EP\d{1,3}',
-        r'\b(19|20)\d{2}\b', r'\b(4k|2160p|1080p|720p|480p)\b', r'\[.*?\]'
+    
+    # Remove all content within brackets and parentheses, common source of variation
+    name = re.sub(r'\[.*?\]', '', name)
+    name = re.sub(r'\(.*?\)', '', name)
+
+    # Replace common delimiters with spaces
+    name = re.sub(r'[\._-]', ' ', name)
+    
+    # Remove year
+    name = re.sub(r'\b(19|20)\d{2}\b', '', name)
+
+    # Remove common tags
+    tags_to_remove = [
+        '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 
+        'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 
+        'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed',
+        'WEB SERIES', 'COMPLETE',
+        r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+'
     ]
-    match = re.search('|'.join(delimiters), name, re.I)
-    base_name = name[:match.start()].strip() if match else name.strip()
-    return re.sub(r'\s+', ' ', base_name).lower()
+    for tag in tags_to_remove:
+        name = re.sub(r'\b' + tag + r'\b', '', name, flags=re.I)
+
+    # Final cleanup and normalization
+    return re.sub(r'\s+', ' ', name).strip().lower()
+
 
 async def process_batch(client, user_id, batch_key):
     try:
@@ -44,7 +64,6 @@ async def process_batch(client, user_id, batch_key):
                             await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
                         else:
                             await client.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
-                    # --- NEW: Smart Notification for Users ---
                     except (ChatAdminRequired, UserNotParticipant) as e:
                         logger.error(f"Permission error in channel {channel_id} for user {user_id}. Error: {e}")
                         await client.send_message(
@@ -65,8 +84,6 @@ async def process_batch(client, user_id, batch_key):
 
 @Client.on_message(filters.channel & (filters.document | filters.video | filters.audio), group=2)
 async def new_file_handler(client, message):
-    # This handler now uses the globally available client.owner_db_channel_id
-    # set by the bot at startup. The logic is self-contained in the worker.
     try:
         user_id = await find_owner_by_db_channel(message.chat.id)
         if not user_id: return
@@ -75,8 +92,8 @@ async def new_file_handler(client, message):
         if not media or not getattr(media, 'file_name', None): return
         
         if not client.owner_db_channel_id:
-             logger.warning("Owner Database Channel not yet set up by admin. Ignoring file.")
-             return
+            logger.warning("Owner Database Channel not yet set up by admin. Ignoring file.")
+            return
         
         # Add the message to the queue for the worker in bot.py to process
         await client.file_queue.put((message, user_id))

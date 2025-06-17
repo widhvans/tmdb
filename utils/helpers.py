@@ -5,65 +5,54 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import Config
 from database.db import get_user
 from features.poster import get_poster
-from thefuzz import fuzz # New import for fuzzy matching
+from thefuzz import fuzz
 
 logger = logging.getLogger(__name__)
 
 FILES_PER_POST = 20
 
 def calculate_title_similarity(title1: str, title2: str) -> float:
-    """
-    Calculates the similarity between two titles using fuzzy matching.
-    Uses token_sort_ratio which is good for titles with words out of order.
-    Returns a score between 0.0 and 1.0.
-    """
+    """Calculates the similarity between two titles using fuzzy matching."""
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
 def clean_filename(name: str):
     """The master function to clean filenames for poster searching and batching."""
     if not name: return "Untitled", None
     
-    # Step 1: Remove file extension
     cleaned_name = re.sub(r'\.\w+$', '', name)
-    
-    # Step 2: Remove all content within brackets and parentheses
     cleaned_name = re.sub(r'\[.*?\]|\(.*?\)|\{.*?\}', '', cleaned_name)
-    
-    # Step 3: Aggressively remove symbols and replace delimiters with a space
     cleaned_name = re.sub(r'[\._\-\|*&^%$#@!()]', ' ', cleaned_name)
-    # Remove any other non-alphanumeric characters (except spaces)
     cleaned_name = re.sub(r'[^A-Za-z0-9 ]', '', cleaned_name)
     
-    # Step 4: Extract year
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
     if year: cleaned_name = cleaned_name.replace(year, '')
         
-    # Step 5: Remove common technical/format tags
     tags = ['1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES']
     for tag in tags:
         cleaned_name = re.sub(r'\b' + tag + r'\b', '', cleaned_name, flags=re.I)
     
-    # Step 6: Final cleanup of extra spaces
     final_title = re.sub(r'\s+', ' ', cleaned_name).strip()
     
     return (final_title, year) if final_title else (re.sub(r'\.\w+$', '', name).replace(".", " "), None)
-
 
 async def create_post(client, user_id, messages):
     """Creates post(s) with smart formatting, similarity sorting, and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
-    # The title of the first message in the batch determines the primary title for the post
-    primary_title, year = clean_filename(getattr(messages[0], messages[0].media.value).file_name)
+    # Get the media object from the first message to determine the primary title
+    first_media_obj = getattr(messages[0], messages[0].media.value, None)
+    if not first_media_obj: return [] # Safety check
+    primary_title, year = clean_filename(first_media_obj.file_name)
     
-    # NEW SORTING: Sort by similarity to the primary title, then by natural filename sort
+    # NEW SORTING LOGIC: Sort by similarity to the primary title, then by natural filename sort
     def similarity_sorter(msg):
-        title, _ = clean_filename(getattr(msg, msg.media.value).file_name)
-        # Higher similarity = comes first, so we use 1.0 - similarity as the primary key
+        media_obj = getattr(msg, msg.media.value, None)
+        if not media_obj: return (1.0, "") # Push messages without media to the end
+        title, _ = clean_filename(media_obj.file_name)
         similarity_score = 1.0 - calculate_title_similarity(primary_title, title)
-        natural_key = natural_sort_key(getattr(msg, msg.media.value).file_name)
+        natural_key = natural_sort_key(media_obj.file_name)
         return (similarity_score, natural_key)
 
     messages.sort(key=similarity_sorter)
@@ -76,7 +65,10 @@ async def create_post(client, user_id, messages):
     
     # Smart Formatting for single file
     if len(messages) == 1:
-        media = messages[0].media
+        # FIXED: Correctly get the media object using getattr
+        media = getattr(messages[0], messages[0].media.value, None)
+        if not media: return []
+        
         file_label, _ = clean_filename(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label or media.file_name}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
@@ -92,15 +84,19 @@ async def create_post(client, user_id, messages):
             
             links = []
             for m in chunk:
-                label, _ = clean_filename(m.media.file_name)
-                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id}"
-                links.append(f"📁 `{label or m.media.file_name}` - [Click Here]({link})")
+                # FIXED: Correctly get the media object using getattr
+                media = getattr(m, m.media.value, None)
+                if not media: continue
+                
+                label, _ = clean_filename(media.file_name)
+                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
+                links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
             
-            # Add a one-line gap between each file entry
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
+# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

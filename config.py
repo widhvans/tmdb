@@ -15,6 +15,9 @@ class Config:
     MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://soniji:chaloji@cluster0.i5zy74f.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
     DATABASE_NAME = os.environ.get("DATABASE_NAME", "telegram_bot")
     
+    # --- TMDB API Key ---
+    TMDB_API_KEY = os.environ.get("TMDB_API_KEY", "5a318417c7f4a722afd9d71df548877b")
+    
     # --- Your VPS IP Address and Port ---
     # The domain where your bot is running. Use your VPS IP.
     # DO NOT include http://

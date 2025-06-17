@@ -15,34 +15,44 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     """Calculates the similarity between two titles using fuzzy matching."""
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
-def get_clean_title_and_year(name: str):
+def create_clean_label(filename: str) -> str:
     """
-    The one master function to rule them all. Hyper-aggressively cleans a filename
-    to get the pure title and year for matching, posting, and searching.
+    'Symbol Shredder': Creates a clean, readable label for display in posts.
     """
-    if not name: return "Untitled", None
+    if not filename: return ""
+    # Remove file extension
+    label = re.sub(r'\.\w+$', '', filename)
+    # Replace common delimiters with a single space
+    label = re.sub(r'[\._-]', ' ', label)
+    # Remove content in brackets, as it's usually promotional
+    label = re.sub(r'\[.*?\]', '', label)
+    # Unconditionally remove any remaining problematic symbols that break markdown
+    label = re.sub(r'[\[\]`()]', '', label)
+    # Collapse multiple spaces into one
+    return re.sub(r'\s+', ' ', label).strip()
 
-    # Remove file extension and content in brackets/parentheses
-    cleaned_name = re.sub(r'\.\w+$', '', name)
+def extract_base_name_and_year(name: str):
+    """Extracts the true base name for matching, using an aggressive cleaner."""
+    if not name: return "Untitled", None
+    
+    # Use a copy of the string for aggressive cleaning
+    cleaned_name = name
+    
+    cleaned_name = re.sub(r'\.\w+$', '', cleaned_name)
     cleaned_name = re.sub(r'\[.*?\]|\(.*?\)|\{.*?\}', '', cleaned_name)
     
-    # Extract year before cleaning further
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
     if year: cleaned_name = cleaned_name.replace(year, '')
         
-    # Replace delimiters and remove ALL symbols, leaving only letters, numbers, and spaces
     cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name)
     cleaned_name = re.sub(r'[^A-Za-z0-9 ]', '', cleaned_name)
     
-    # Remove all known technical and promotional tags
     tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', 'org', '1080p', '720p', '480p', '2160p', '4k', 'hd', 'fhd', 'uhd', 'bluray', 'webrip', 'web-dl', 'hdrip', 'x264', 'x265', 'hevc', 'aac', 'hindi', 'english', 'esubs', 'dubbed', 'complete', 'web-series', r's\d{1,2}e\d{1,3}', r's\d{1,2}', r'season\s?\d{1,2}', r'part\s?\d{1,2}', r'e\d{1,3}', r'ep\d{1,3}']
     for tag in tags:
-        cleaned_name = re.sub(r'\b' + tag + r'\b', '', cleaned_name, flags=re.I)
+        cleaned_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_name, flags=re.I)
     
-    # Final cleanup of extra spaces
     final_title = re.sub(r'\s+', ' ', cleaned_name).strip()
-    
     return (final_title, year) if final_title else ("Untitled", year)
 
 
@@ -50,29 +60,19 @@ async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return []
 
-    # === THE DEFINITIVE FIX FOR THE ATTRIBUTEERROR CRASH ===
-    # We now correctly get the media object from the message first.
-    first_media_obj = getattr(messages[0], messages[0].media.value, None)
-    if not first_media_obj:
-        logger.error("Could not get media object from the first message in batch.")
-        return []
+    primary_base_name, year = extract_base_name_and_year(getattr(messages[0].media, messages[0].media.value).file_name)
     
-    # Use the master cleaning function to get a pristine title for the header
-    primary_title, year = get_clean_title_and_year(first_media_obj.file_name)
+    messages.sort(key=lambda m: natural_sort_key(getattr(m.media, m.media.value).file_name))
     
-    # Sort files naturally by their full filename for logical order (E01, E02 etc.)
-    messages.sort(key=lambda m: natural_sort_key(getattr(m, m.media.value, None).file_name if getattr(m, m.media.value, None) else ""))
-    
-    base_caption_header = f"🎬 **{primary_title} {f'({year})' if year else ''}**"
-    post_poster = await get_poster(primary_title, year) if user.get('show_poster', True) else None
+    base_caption_header = f"🎬 **{primary_base_name} {f'({year})' if year else ''}**"
+    post_poster = await get_poster(primary_base_name, year) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
         media = getattr(messages[0], messages[0].media.value)
-        # Use the raw filename for the label to preserve all details, but remove extension
-        file_label = re.sub(r'\.\w+$', '', media.file_name).replace('_', ' ').strip()
+        file_label = create_clean_label(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
         return [(post_poster, f"{base_caption_header}\n\n{caption_body}", footer_keyboard)]
@@ -85,8 +85,7 @@ async def create_post(client, user_id, messages):
             links = []
             for m in chunk:
                 media = getattr(m, m.media.value)
-                # Use the raw filename for the label to preserve all details, but remove extension
-                label = re.sub(r'\.\w+$', '', media.file_name).replace('_', ' ').strip()
+                label = create_clean_label(media.file_name)
                 link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
                 links.append(f"📁 `{label}` - [Click Here]({link})")
             
@@ -94,7 +93,8 @@ async def create_post(client, user_id, messages):
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
-# --- (The rest of the helper functions are provided for completeness) ---
+# --- (The rest of the helper functions are unchanged and provided for completeness) ---
+
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])

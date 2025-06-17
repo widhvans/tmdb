@@ -5,12 +5,11 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageNotModified
 from database.db import (
-    get_user, update_user, add_to_list, remove_from_list, 
-    get_user_file_count, add_footer_button, remove_footer_button, 
+    get_user, update_user, add_to_list, remove_from_list,
+    get_user_file_count, add_footer_button, remove_footer_button,
     get_all_user_files, get_paginated_files, search_user_files
 )
-from utils.helpers import go_back_button, get_main_menu, create_post, encode_link
-# Use the new robust batch key function for backups too
+from utils.helpers import go_back_button, get_main_menu, create_post
 from handlers.new_post import get_batch_key
 
 logger = logging.getLogger(__name__)
@@ -82,7 +81,7 @@ async def get_fsub_menu_parts(client, user_id):
 async def settings_submenu_handler(client, query):
     user_id = query.from_user.id
     menu_type = query.data.split("_")[0]
-    
+
     if menu_type == "shortener":
         text, markup = await get_shortener_menu_parts(user_id)
     elif menu_type == "poster":
@@ -91,7 +90,7 @@ async def settings_submenu_handler(client, query):
         text, markup = await get_fsub_menu_parts(client, user_id)
     else:
         return
-        
+
     await safe_edit_message(query, text=text, reply_markup=markup)
 
 @Client.on_callback_query(filters.regex(r"toggle_(shortener|poster)"))
@@ -99,12 +98,12 @@ async def toggle_handler(client, query):
     user_id = query.from_user.id
     feature = query.data.split("_")[1]
     key = "shortener_enabled" if feature == "shortener" else "show_poster"
-    
+
     user = await get_user(user_id)
     new_status = not user.get(key, True)
     await update_user(user_id, key, new_status)
     await query.answer(f"{feature.title()} is now {'ON' if new_status else 'OFF'}", show_alert=True)
-    
+
     if feature == "shortener":
         text, markup = await get_shortener_menu_parts(user_id)
     else:
@@ -122,9 +121,9 @@ async def my_files_handler(client, query):
         total_files = await get_user_file_count(user_id)
         files_per_page = 5
         bot_username = client.me.username
-        
+
         text = f"**📂 Your Saved Files ({total_files} Total)**\n\n"
-        
+
         if total_files == 0:
             text += "You have not saved any files yet."
         else:
@@ -136,7 +135,7 @@ async def my_files_handler(client, query):
                     payload = f"get_{file['file_unique_id']}"
                     deep_link = f"https://t.me/{bot_username}?start={payload}"
                     text += f"**File:** `{file['file_name']}`\n**Link:** [Click Here to Get File]({deep_link})\n\n"
-                
+
         buttons, nav_row = [], []
         if page > 1:
             nav_row.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"my_files_{page-1}"))
@@ -145,7 +144,7 @@ async def my_files_handler(client, query):
         if nav_row: buttons.append(nav_row)
         buttons.append([InlineKeyboardButton("🔍 Search My Files", callback_data="search_my_files")])
         buttons.append([InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")])
-        
+
         await safe_edit_message(query, text=text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
     except Exception:
         logger.exception("Error in my_files_handler")
@@ -222,7 +221,7 @@ async def backup_links_handler(client, query):
         except: continue
     if not kb: return await query.answer("Could not access any of your Post Channels.", show_alert=True)
     kb.append([InlineKeyboardButton("« Go Back", callback_data=f"go_back_{user_id}")])
-    await safe_edit_message(query, text="**🔄 Smart Backup**\n\nSelect a channel.", reply_markup=InlineKeyboardMarkup(kb))
+    await safe_edit_message(query, text="**🔄 Smart Backup**\n\nSelect a channel to back up your posts to.", reply_markup=InlineKeyboardMarkup(kb))
 
 @Client.on_callback_query(filters.regex(r"start_backup_-?\d+"))
 async def start_backup_process(client, query):
@@ -231,40 +230,48 @@ async def start_backup_process(client, query):
     channel_id = int(query.data.split("_")[-1])
     ACTIVE_BACKUP_TASKS.add(user_id)
     try:
-        await query.message.edit_text("⏳ `Step 1/3:` Fetching file records...")
+        await query.message.edit_text("⏳ `Step 1/3:` Grouping your files...")
         all_files_cursor = await get_all_user_files(user_id)
         batches = {}
         async for file_doc in all_files_cursor:
             if not file_doc or not file_doc.get('file_name'): continue
-            # Use the new robust batch key function
             batch_key = get_batch_key(file_doc['file_name'])
             if batch_key not in batches: batches[batch_key] = []
             batches[batch_key].append(file_doc)
         total_batches = len(batches)
         if total_batches == 0:
             return await safe_edit_message(query, text="You have no files to back up.", reply_markup=go_back_button(user_id))
-        
-        await safe_edit_message(query, text=f"✅ `Step 2/3:` Found **{total_batches}** posts to create.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
-        
+
+        await safe_edit_message(query, text=f"✅ `Step 2/3:` Found **{total_batches}** posts to create. Starting backup...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
+
         for i, (batch_key, file_docs) in enumerate(batches.items()):
             if user_id not in ACTIVE_BACKUP_TASKS:
-                await safe_edit_message(query, text="❌ Backup cancelled.", reply_markup=go_back_button(user_id))
+                await safe_edit_message(query, text="❌ Backup cancelled by user.", reply_markup=go_back_button(user_id))
                 return
             try:
                 message_ids = [int(doc['raw_link'].split('/')[-1]) for doc in file_docs]
                 source_chat_id = int("-100" + file_docs[0]['raw_link'].split('/')[-2])
                 file_messages = await client.get_messages(source_chat_id, message_ids)
-                poster, caption, footer = await create_post(client, user_id, file_messages)
-                if poster: await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer)
-                else: await client.send_message(channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
-                
-                progress_text = f"🔄 `Step 3/3:` Progress: {i + 1} / {total_batches} posts created."
+
+                # create_post now returns a list of posts to handle splitting
+                posts_to_send = await create_post(client, user_id, file_messages)
+
+                # Loop through each post part (if split) and send it
+                for post in posts_to_send:
+                    poster, caption, footer = post
+                    if not caption: continue
+
+                    if poster: await client.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer)
+                    else: await client.send_message(channel_id, caption, reply_markup=footer, disable_web_page_preview=True)
+                    # Delay between sending each part
+                    await asyncio.sleep(3)
+
+                progress_text = f"🔄 `Step 3/3:` Progress: {i + 1} / {total_batches} batches processed."
                 await safe_edit_message(query, text=progress_text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
-                await asyncio.sleep(3)
             except Exception as e:
                 logger.exception(f"Failed to post batch '{batch_key}' during backup.")
-                await client.send_message(user_id, f"Failed to post batch for `{batch_key}`. Error: {e}")
-        
+                await client.send_message(user_id, f"Failed to back up batch for `{batch_key}`. Error: {e}")
+
         await query.message.delete()
         await client.send_message(user_id, "✅ **Backup Complete!**", reply_markup=go_back_button(user_id))
     except Exception as e:
@@ -283,7 +290,6 @@ async def cancel_backup_handler(client, query):
     else:
         await query.answer("No active backup process found.", show_alert=True)
 
-# (The rest of the file is unchanged)
 @Client.on_callback_query(filters.regex("manage_footer"))
 async def manage_footer_handler(client, query):
     user_id = query.from_user.id
@@ -375,9 +381,11 @@ async def add_channel_prompt(client, query):
             await add_to_list(user_id, ch_type_key, response.forward_from_chat.id)
             await response.reply_text(f"✅ Connected to **{response.forward_from_chat.title}**.", reply_markup=go_back_button(user_id))
         else: await response.reply_text("Not a valid forwarded message.", reply_markup=go_back_button(user_id))
-        await question.delete()
+        if question: await question.delete()
+        if response: await response.delete()
+
     except asyncio.TimeoutError:
-        if question: await safe_edit_message(question, text="Command timed out.")
+        if question: await safe_edit_message(query, text="Command timed out.")
     except Exception as e:
         await query.message.reply_text(f"An error occurred: {e}", reply_markup=go_back_button(user_id))
 

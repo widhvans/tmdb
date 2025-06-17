@@ -53,23 +53,17 @@ def extract_base_name_and_year(name: str):
 
 
 async def create_post(client, user_id, messages):
+    """Creates post(s) with smart formatting, similarity sorting, and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
-    # ### CRITICAL FIX HERE ###
-    # The 'getattr' call now correctly uses messages[0] as the source object, not messages[0].media
     first_media_obj = getattr(messages[0], messages[0].media.value, None)
-    if not first_media_obj: 
-        logger.error("Could not get media object from the first message in batch.")
-        return []
+    if not first_media_obj: return []
     primary_base_name, year = extract_base_name_and_year(first_media_obj.file_name)
     
     def similarity_sorter(msg):
-        # ### CRITICAL FIX HERE ###
-        # This was also corrected to prevent the same error during sorting.
         media_obj = getattr(msg, msg.media.value, None)
-        if not media_obj:
-            return (1.0, "") # Push messages without media to the end
+        if not media_obj: return (1.0, "")
         return natural_sort_key(media_obj.file_name)
 
     messages.sort(key=similarity_sorter)
@@ -81,7 +75,6 @@ async def create_post(client, user_id, messages):
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        # ### CRITICAL FIX HERE ###
         media = getattr(messages[0], messages[0].media.value, None)
         if not media: return []
 
@@ -97,12 +90,15 @@ async def create_post(client, user_id, messages):
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
             links = []
             for m in chunk:
-                # ### CRITICAL FIX HERE ###
                 media = getattr(m, m.media.value, None)
                 if not media: continue
                 
                 label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
-                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id}"
+                
+                # ### THIS IS THE FINAL, DEFINITIVE FIX ###
+                # The line now correctly uses 'media.file_unique_id' instead of 'm.media.file_unique_id'
+                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
+                
                 links.append(f"📁 `{label}` - [Click Here]({link})")
             
             final_caption = f"{header}\n\n" + "\n\n".join(links)

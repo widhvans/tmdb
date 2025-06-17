@@ -30,9 +30,7 @@ class Bot(Client):
         super().__init__("FinalStorageBot", api_id=Config.API_ID, api_hash=Config.API_HASH, bot_token=Config.BOT_TOKEN, plugins=dict(root="handlers"))
         self.me, self.owner_db_channel_id, self.web_app, self.web_runner = None, None, None, None
         self.file_queue = asyncio.Queue()
-        # New Fuzzy Batching System
-        self.open_batches = {} # Structure: {user_id: {batch_id: {'title': str, 'messages': [], 'timer': asyncio.TimerHandle}}}
-        # For smart notifications
+        self.open_batches = {}
         self.notification_flags, self.notification_timers = {}, {}
 
     def _reset_notification_flag(self, channel_id):
@@ -40,11 +38,9 @@ class Bot(Client):
         logger.info(f"Notification flag reset for channel {channel_id}.")
 
     async def _finalize_batch(self, user_id, batch_id):
-        """The new task that finalizes and posts a batch after its timer expires."""
         notification_messages = []
         try:
             if user_id not in self.open_batches or batch_id not in self.open_batches[user_id]: return
-            
             batch_data = self.open_batches[user_id].pop(batch_id)
             messages, batch_title = batch_data['messages'], batch_data['title']
             if not messages: return
@@ -94,14 +90,13 @@ class Bot(Client):
                 new_title, _ = clean_filename(getattr(copied_message, copied_message.media.value).file_name)
                 if not new_title: continue
 
-                best_match_id, highest_similarity = None, 0.85 # Min similarity to be a match
+                best_match_id, highest_similarity = None, 0.85
                 self.open_batches.setdefault(user_id, {})
 
                 for batch_id, data in self.open_batches[user_id].items():
                     similarity = calculate_title_similarity(new_title, data['title'])
                     if similarity > highest_similarity:
-                        highest_similarity = similarity
-                        best_match_id = batch_id
+                        highest_similarity, best_match_id = similarity, batch_id
                 
                 loop = asyncio.get_event_loop()
                 if best_match_id:
@@ -113,8 +108,7 @@ class Bot(Client):
                 else:
                     new_batch_id = copied_message.id
                     self.open_batches[user_id][new_batch_id] = {
-                        'title': new_title,
-                        'messages': [copied_message],
+                        'title': new_title, 'messages': [copied_message],
                         'timer': loop.call_later(7, lambda: asyncio.create_task(self._finalize_batch(user_id, new_batch_id)))
                     }
                     logger.info(f"Created new batch for '{new_title}'")
@@ -130,6 +124,16 @@ class Bot(Client):
             except Exception as e:
                 logger.error(f"SEND_PROTECTION: An error occurred: {e}"); raise
 
+    async def start_web_server(self):
+        """Initializes and starts the web server correctly."""
+        self.web_app = web.Application()
+        self.web_app.router.add_get("/get/{file_unique_id}", handle_redirect)
+        self.web_runner = web.AppRunner(self.web_app)
+        await self.web_runner.setup()
+        site = web.TCPSite(self.web_runner, Config.VPS_IP, Config.VPS_PORT)
+        await site.start()
+        logger.info(f"Web redirector started at http://{Config.VPS_IP}:{Config.VPS_PORT}")
+
     async def start(self):
         await super().start()
         self.me = await self.get_me()
@@ -140,13 +144,17 @@ class Bot(Client):
             with open(Config.BOT_USERNAME_FILE, 'w') as f: f.write(f"@{self.me.username}")
             logger.info(f"Updated bot username to @{self.me.username}")
         except Exception as e: logger.error(f"Could not write to {Config.BOT_USERNAME_FILE}: {e}")
+        
         asyncio.create_task(self.file_processor_worker())
-        await web.TCPSite(web.AppRunner(web.Application().add_router(self)), Config.VPS_IP, Config.VPS_PORT).start()
+        
+        # FIXED: Call the correct web server setup method
+        await self.start_web_server()
+        
         logger.info(f"Bot @{self.me.username} started successfully.")
 
     async def stop(self, *args):
         logger.info("Stopping bot...")
-        if hasattr(self, 'web_runner') and self.web_runner: await self.web_runner.cleanup()
+        if self.web_runner: await self.web_runner.cleanup()
         await super().stop()
         logger.info("Bot stopped.")
 

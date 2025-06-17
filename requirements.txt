@@ -4,3 +4,6 @@ motor
 aiohttp
 beautifulsoup4
 pyromod
+# New libraries for fuzzy matching
+thefuzz==0.22.1
+python-Levenshtein==0.25.1

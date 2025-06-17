@@ -9,7 +9,6 @@ from features.shortener import get_shortlink
 
 logger = logging.getLogger(__name__)
 
-# (All functions before create_post are unchanged from the last final version)
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
     if not user_settings: return InlineKeyboardMarkup([])
@@ -83,7 +82,6 @@ async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return None, None, None
     
-    bot_username = client.me.username
     title, year = clean_filename(getattr(messages[0], messages[0].media.value).file_name)
     caption_header = f"🎬 **{title} {f'({year})' if year else ''}**"
     
@@ -97,12 +95,13 @@ async def create_post(client, user_id, messages):
         
         file_unique_id = media.file_unique_id
         
-        payload = f"get_{file_unique_id}"
-        bot_redirect_link = f"https://t.me/{bot_username}?start={payload}"
+        # --- CORRECTED LINK ---
+        # This now creates the link pointing to your self-hosted web server.
+        # This ensures the link will always work, even if the bot token changes.
+        web_server_link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{file_unique_id}"
         
-        # --- REVERTED: Filename is now just plain text ---
         filename_part = f"📁 `{link_label}`"
-        links += f"{filename_part}\n\n[🔗 Click Here]({bot_redirect_link})\n\n"
+        links += f"{filename_part}\n\n[🔗 Click Here]({web_server_link})\n\n"
         
     final_caption = f"{caption_header}\n\n{links}"
     

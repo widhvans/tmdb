@@ -10,6 +10,7 @@ from database.db import (
     get_all_user_files, get_paginated_files, search_user_files
 )
 from utils.helpers import go_back_button, get_main_menu, create_post, encode_link
+# Use the new robust batch key function for backups too
 from handlers.new_post import get_batch_key
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,6 @@ async def my_files_handler(client, query):
                 text += "No more files found on this page."
             else:
                 for file in files_on_page:
-                    # FIX: Use file_unique_id for the payload
                     payload = f"get_{file['file_unique_id']}"
                     deep_link = f"https://t.me/{bot_username}?start={payload}"
                     text += f"**File:** `{file['file_name']}`\n**Link:** [Click Here to Get File]({deep_link})\n\n"
@@ -231,11 +231,12 @@ async def start_backup_process(client, query):
     channel_id = int(query.data.split("_")[-1])
     ACTIVE_BACKUP_TASKS.add(user_id)
     try:
-        progress_msg = await query.message.edit_text("⏳ `Step 1/3:` Fetching file records...")
+        await query.message.edit_text("⏳ `Step 1/3:` Fetching file records...")
         all_files_cursor = await get_all_user_files(user_id)
         batches = {}
         async for file_doc in all_files_cursor:
             if not file_doc or not file_doc.get('file_name'): continue
+            # Use the new robust batch key function
             batch_key = get_batch_key(file_doc['file_name'])
             if batch_key not in batches: batches[batch_key] = []
             batches[batch_key].append(file_doc)
@@ -282,6 +283,7 @@ async def cancel_backup_handler(client, query):
     else:
         await query.answer("No active backup process found.", show_alert=True)
 
+# (The rest of the file is unchanged)
 @Client.on_callback_query(filters.regex("manage_footer"))
 async def manage_footer_handler(client, query):
     user_id = query.from_user.id

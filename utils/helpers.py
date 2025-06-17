@@ -15,58 +15,67 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     """Calculates the similarity between two titles using fuzzy matching."""
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
+def create_clean_label(filename: str) -> str:
+    """
+    Creates a clean, readable label for display in posts.
+    It removes junk but keeps important episode/version info.
+    """
+    if not filename: return ""
+    # Remove file extension
+    label = re.sub(r'\.\w+$', '', filename)
+    # Replace common delimiters with a single space
+    label = re.sub(r'[\._-]', ' ', label)
+    # Remove content in brackets, as it's usually promotional
+    label = re.sub(r'\[.*?\]', '', label)
+    # Remove any stray backticks that break markdown
+    label = label.replace('`', '')
+    # Collapse multiple spaces into one
+    label = re.sub(r'\s+', ' ', label).strip()
+    return label
+
 def extract_base_name_and_year(name: str):
     """
-    The core engine. Extracts the true base name of a show/movie,
-    separating it from episode details, year, and quality tags.
+    Extracts the true base name of a show/movie for matching and poster searches.
     """
     if not name: return "Untitled", None
 
-    cleaned_name = re.sub(r'\.\w+$', '', name)
-    cleaned_name = re.sub(r'\[.*?\]', '', cleaned_name)
-    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name)
+    # Use the clean label function for initial cleaning
+    cleaned_name = create_clean_label(name)
 
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
     if year:
         cleaned_name = cleaned_name.replace(year, '')
 
+    # Define delimiters that separate the base name from the rest
     series_delimiters = [
-        r'S\d{1,2}E\d{1,3}', r'S\d{1,2}', r'Season\s?\d{1,2}',
-        r'E\d{1,3}', r'EP\d{1,3}', 'Part\s?\d{1,2}'
+        r'S\d{1,2}', r'Season\s?\d{1,2}', r'Part\s?\d{1,2}'
     ]
     
     base_name = cleaned_name
     for delimiter in series_delimiters:
         match = re.search(delimiter, cleaned_name, re.I)
         if match:
+            # The base name is everything before the first series delimiter found
             base_name = cleaned_name[:match.start()]
             break
-
-    tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', 'COMPLETE', 'WEB-SERIES']
-    for tag in tags:
-        base_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', base_name, flags=re.I)
     
+    # Final cleanup of the extracted base name
     final_base_name = re.sub(r'\s+', ' ', base_name).strip()
+    # Remove episode-specific titles that may be left over
+    final_base_name = re.split(r' E\d{1,3}| EP\d{1,3}', final_base_name, flags=re.I)[0].strip()
 
     return (final_base_name, year) if final_base_name else ("Untitled", year)
 
 
 async def create_post(client, user_id, messages):
-    """Creates post(s) with smart formatting, similarity sorting, and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
-    first_media_obj = getattr(messages[0], messages[0].media.value, None)
-    if not first_media_obj: return []
-    primary_base_name, year = extract_base_name_and_year(first_media_obj.file_name)
+    primary_base_name, year = extract_base_name_and_year(getattr(messages[0].media, messages[0].media.value).file_name)
     
-    def similarity_sorter(msg):
-        media_obj = getattr(msg, msg.media.value, None)
-        if not media_obj: return (1.0, "")
-        return natural_sort_key(media_obj.file_name)
-
-    messages.sort(key=similarity_sorter)
+    # Sort files naturally by their full filename for logical order (E01, E02 etc.)
+    messages.sort(key=lambda m: natural_sort_key(getattr(m.media, m.media.value).file_name))
     
     base_caption_header = f"🎬 **{primary_base_name} {f'({year})' if year else ''}**"
     post_poster = await get_poster(primary_base_name, year) if user.get('show_poster', True) else None
@@ -75,10 +84,9 @@ async def create_post(client, user_id, messages):
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        media = getattr(messages[0], messages[0].media.value, None)
-        if not media: return []
-
-        file_label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
+        media = messages[0].media
+        # Use the new clean label function
+        file_label = create_clean_label(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
         return [(post_poster, f"{base_caption_header}\n\n{caption_body}", footer_keyboard)]
@@ -90,22 +98,16 @@ async def create_post(client, user_id, messages):
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
             links = []
             for m in chunk:
-                media = getattr(m, m.media.value, None)
-                if not media: continue
-                
-                label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
-                
-                # ### THIS IS THE FINAL, DEFINITIVE FIX ###
-                # The line now correctly uses 'media.file_unique_id' instead of 'm.media.file_unique_id'
+                media = getattr(m, m.media.value)
+                # Use the new clean label function here as well
+                label = create_clean_label(media.file_name)
                 link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-                
                 links.append(f"📁 `{label}` - [Click Here]({link})")
             
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
-# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

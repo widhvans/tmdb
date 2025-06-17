@@ -90,7 +90,13 @@ class Bot(Client):
 
                 await save_file_data(user_id, message, copied_message)
                 
-                base_name, _ = extract_base_name_and_year(getattr(copied_message.media, copied_message.media.value).file_name)
+                # FIXED: Correctly get the media object from the message, not from message.media
+                media_object = getattr(copied_message, copied_message.media.value, None)
+                if not media_object or not hasattr(media_object, 'file_name'):
+                    logger.warning(f"Message {copied_message.id} has no valid media object or file_name.")
+                    continue
+
+                base_name, _ = extract_base_name_and_year(media_object.file_name)
                 if not base_name: continue
 
                 best_match_id, highest_similarity = None, 0.90

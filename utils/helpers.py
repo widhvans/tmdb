@@ -15,63 +15,70 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     """Calculates the similarity between two titles using fuzzy matching."""
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
-def clean_filename(name: str):
-    """The master function to clean filenames for poster searching and batching."""
+def extract_base_name_and_year(name: str):
+    """
+    The core engine. Extracts the true base name of a show/movie,
+    separating it from episode details, year, and quality tags.
+    """
     if not name: return "Untitled", None
-    
-    cleaned_name = re.sub(r'\.\w+$', '', name)
-    cleaned_name = re.sub(r'\[.*?\]|\(.*?\)|\{.*?\}', '', cleaned_name)
-    cleaned_name = re.sub(r'[\._\-\|*&^%$#@!()]', ' ', cleaned_name)
-    cleaned_name = re.sub(r'[^A-Za-z0-9 ]', '', cleaned_name)
-    
+
+    # Initial cleanup
+    cleaned_name = re.sub(r'\.\w+$', '', name) # Remove extension
+    cleaned_name = re.sub(r'\[.*?\]', '', cleaned_name) # Remove content in brackets
+    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name) # Replace delimiters
+
+    # Extract year first, as it can be a strong delimiter
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
-    if year: cleaned_name = cleaned_name.replace(year, '')
-        
-    tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES']
-    for tag in tags:
-        cleaned_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_name, flags=re.I)
+    if year:
+        cleaned_name = cleaned_name.replace(year, '')
+
+    # Define delimiters that separate the base name from the rest
+    series_delimiters = [
+        r'S\d{1,2}E\d{1,3}', r'S\d{1,2}', r'Season\s?\d{1,2}',
+        r'E\d{1,3}', r'EP\d{1,3}', 'Part\s?\d{1,2}'
+    ]
     
-    final_title = re.sub(r'\s+', ' ', cleaned_name).strip()
-    return (final_title, year) if final_title else (re.sub(r'\.\w+$', '', name).replace(".", " "), None)
+    base_name = cleaned_name
+    for delimiter in series_delimiters:
+        match = re.search(delimiter, cleaned_name, re.I)
+        if match:
+            # The base name is everything before the first series delimiter found
+            base_name = cleaned_name[:match.start()]
+            break
+
+    # Final cleanup of the extracted base name
+    tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', 'COMPLETE', 'WEB-SERIES']
+    for tag in tags:
+        base_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', base_name, flags=re.I)
+    
+    final_base_name = re.sub(r'\s+', ' ', base_name).strip()
+
+    return (final_base_name, year) if final_base_name else ("Untitled", year)
 
 
 async def create_post(client, user_id, messages):
-    """Creates post(s) with smart formatting, similarity sorting, and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
-    # FIXED: Correctly get the media object from the message, not message.media
-    first_media_obj = getattr(messages[0], messages[0].media.value, None)
-    if not first_media_obj: return []
-    primary_title, year = clean_filename(first_media_obj.file_name)
+    primary_base_name, year = extract_base_name_and_year(getattr(messages[0].media, messages[0].media.value).file_name)
     
-    # Sort by similarity to the primary title, then by natural filename sort
     def similarity_sorter(msg):
-        # FIXED: Correctly get the media object for comparison
-        media_obj = getattr(msg, msg.media.value, None)
-        if not media_obj: return (1.0, "")
-        title, _ = clean_filename(media_obj.file_name)
-        similarity_score = 1.0 - calculate_title_similarity(primary_title, title)
-        natural_key = natural_sort_key(media_obj.file_name)
-        return (similarity_score, natural_key)
+        return natural_sort_key(getattr(msg.media, msg.media.value).file_name)
 
     messages.sort(key=similarity_sorter)
     
-    base_caption_header = f"🎬 **{primary_title} {f'({year})' if year else ''}**"
-    post_poster = await get_poster(primary_title, year) if user.get('show_poster', True) else None
+    base_caption_header = f"🎬 **{primary_base_name} {f'({year})' if year else ''}**"
+    post_poster = await get_poster(primary_base_name, year) if user.get('show_poster', True) else None
     
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        # FIXED: Correctly get the media object
-        media = getattr(messages[0], messages[0].media.value, None)
-        if not media: return []
-
-        file_label, _ = clean_filename(media.file_name)
+        media = messages[0].media
+        file_label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-        caption_body = f"📁 `{file_label or media.file_name}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
+        caption_body = f"📁 `{file_label}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
         return [(post_poster, f"{base_caption_header}\n\n{caption_body}", footer_keyboard)]
     else:
         posts, total = [], len(messages)
@@ -79,20 +86,11 @@ async def create_post(client, user_id, messages):
         for i in range(num_posts):
             chunk = messages[i*FILES_PER_POST:(i+1)*FILES_PER_POST]
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
-            links = []
-            for m in chunk:
-                # FIXED: Correctly get the media object
-                media = getattr(m, m.media.value, None)
-                if not media: continue
-                label, _ = clean_filename(media.file_name)
-                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-                links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
-            
+            links = [f"📁 `{re.sub(r'\[@.*?\]', '', m.media.file_name).strip()}` - [Click Here](http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id})" for m in chunk]
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
-# --- (The rest of the helper functions are unchanged) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

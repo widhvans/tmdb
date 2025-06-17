@@ -61,7 +61,6 @@ class Bot(Client):
             try:
                 message_to_process, user_id = await self.file_queue.get()
                 
-                # Check for the ID on each run, in case it was just set
                 if not self.owner_db_channel_id:
                     self.owner_db_channel_id = await get_owner_db_channel()
 
@@ -83,6 +82,7 @@ class Bot(Client):
                 async with self.batch_locks[user_id][batch_key]:
                     if batch_key not in self.file_batch.setdefault(user_id, {}):
                         self.file_batch[user_id][batch_key] = [copied_message]
+                        # This task will wait 10s then process the batch
                         asyncio.create_task(self.process_batch_task(user_id, batch_key))
                     else:
                         self.file_batch[user_id][batch_key].append(copied_message)
@@ -96,8 +96,10 @@ class Bot(Client):
     async def process_batch_task(self, user_id, batch_key):
         """The task that waits and posts a batch of files."""
         try:
+            # Wait for more files to potentially be added to the batch
             await asyncio.sleep(10)
             if user_id not in self.batch_locks or batch_key not in self.batch_locks.get(user_id, {}): return
+            
             async with self.batch_locks[user_id][batch_key]:
                 messages = self.file_batch[user_id].pop(batch_key, [])
                 if not messages: return
@@ -105,17 +107,23 @@ class Bot(Client):
                 user = await get_user(user_id)
                 if not user or not user.get('post_channels'): return
 
-                poster, caption, footer_keyboard = await create_post(self, user_id, messages)
-                if not caption: return
+                # create_post now returns a list of posts to handle splitting
+                posts_to_send = await create_post(self, user_id, messages)
+                if not posts_to_send: return
 
                 for channel_id in user.get('post_channels', []):
-                    try:
-                        if poster:
-                            await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
-                        else:
-                            await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
-                    except Exception as e:
-                        await self.send_message(user_id, f"Error posting to `{channel_id}`: {e}")
+                    # Loop through each post part (if split) and send it
+                    for post in posts_to_send:
+                        poster, caption, footer_keyboard = post
+                        try:
+                            if poster:
+                                await self.send_photo(channel_id, photo=poster, caption=caption, reply_markup=footer_keyboard)
+                            else:
+                                await self.send_message(channel_id, caption, reply_markup=footer_keyboard, disable_web_page_preview=True)
+                            # Add a small delay between sending parts of a split post
+                            await asyncio.sleep(2)
+                        except Exception as e:
+                            await self.send_message(user_id, f"Error posting to `{channel_id}`: {e}")
         except Exception:
             logger.exception(f"An error occurred in process_batch_task for user {user_id}")
         finally:
@@ -136,7 +144,6 @@ class Bot(Client):
         await super().start()
         self.me = await self.get_me()
         
-        # Load the Owner DB Channel ID from the database into the bot's memory
         self.owner_db_channel_id = await get_owner_db_channel()
         if self.owner_db_channel_id:
             logger.info(f"Successfully loaded Owner Database ID [{self.owner_db_channel_id}] from database.")
@@ -150,7 +157,6 @@ class Bot(Client):
         except Exception as e:
             logger.error(f"Could not write to {Config.BOT_USERNAME_FILE}. Error: {e}")
         
-        # Start the worker and web server
         asyncio.create_task(self.file_processor_worker())
         await self.start_web_server()
         logger.info(f"Bot @{self.me.username} and all services started successfully.")

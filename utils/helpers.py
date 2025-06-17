@@ -8,20 +8,48 @@ from features.poster import get_poster
 
 logger = logging.getLogger(__name__)
 
+# Max files per post before splitting.
 FILES_PER_POST = 20
 
 def clean_filename(name: str):
-    """The master function to clean filenames for poster searching and batching."""
+    """
+    The master function to clean filenames, now with a smart promotional skipper.
+    """
     if not name: return "Untitled", None
-    
-    # Remove file extension
+
+    # Step 1: Initial cleanup of delimiters and file extension
     cleaned_name = re.sub(r'\.\w+$', '', name)
+    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name)
+
+    # Step 2: NEW - Remove web URLs from anywhere in the name
+    cleaned_name = re.sub(r'\b(www\.\S+|\S+\.(com|net|org|in|xyz|pro|me|io|club|site|co))\b', '', cleaned_name, flags=re.I)
+    
+    # Step 3: NEW - Smartly skip promotional words at the beginning
+    words = cleaned_name.split()
+    promo_keywords = [
+        'movies', 'hub', 'flix', 'rips', 'team', 'group', 'hd', 'exclusive', 
+        'uploader', 'channel', 'movies', 'official', 'telegram', 'series'
+    ]
+    words_to_skip = 0
+    for word in words:
+        lower_word = word.lower()
+        # A word is likely promotional if it starts with @ or contains a promo keyword
+        if lower_word.startswith('@') or any(promo in lower_word for promo in promo_keywords):
+            words_to_skip += 1
+        else:
+            # Once we find a word that doesn't look like a promotion, we stop.
+            break
+            
+    # Rebuild the name with the initial promo words skipped
+    if words_to_skip > 0:
+        logger.info(f"Skipped promotional words: {' '.join(words[:words_to_skip])}")
+        cleaned_name = ' '.join(words[words_to_skip:])
+
+    # Step 4: Continue with the existing robust cleaning process
     # Remove all content within brackets and parentheses
     cleaned_name = re.sub(r'\[.*?\]|\(.*?\)|\{.*?\}', '', cleaned_name)
-    
-    # Aggressively remove symbols, replacing them and common delimiters with a space
-    cleaned_name = re.sub(r'[\._\-\|*&^%$#@!()]', ' ', cleaned_name)
-    # Remove any other non-alphanumeric characters (except spaces)
+    # Aggressively remove symbols
+    cleaned_name = re.sub(r'[:|*&^%$#@!()]', ' ', cleaned_name)
     cleaned_name = re.sub(r'[^A-Za-z0-9 ]', '', cleaned_name)
     
     # Extract year
@@ -29,8 +57,8 @@ def clean_filename(name: str):
     year = year_match.group(0) if year_match else None
     if year: cleaned_name = cleaned_name.replace(year, '')
         
-    # Remove common tags
-    tags = ['1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES']
+    # Remove common technical/format tags
+    tags = ['1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE']
     for tag in tags:
         cleaned_name = re.sub(r'\b' + tag + r'\b', '', cleaned_name, flags=re.I)
     
@@ -56,14 +84,11 @@ async def create_post(client, user_id, messages):
     
     if len(messages) == 1:
         media = getattr(messages[0], messages[0].media.value)
-        # Use clean_filename to get a clean label without symbols for the post
         file_label, _ = clean_filename(media.file_name)
         file_size_str = format_bytes(media.file_size)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-        
         caption_body = f"📁 `{file_label or media.file_name}` ({file_size_str})\n\n[🔗 Click Here to Get File]({link})"
         final_caption = f"{base_caption_header}\n\n{caption_body}"
-        
         return [(post_poster, final_caption, footer_keyboard)]
     else:
         posts, total = [], len(messages)
@@ -71,7 +96,6 @@ async def create_post(client, user_id, messages):
         for i in range(num_posts):
             chunk = messages[i*FILES_PER_POST:(i+1)*FILES_PER_POST]
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
-            
             links = []
             for m in chunk:
                 media = getattr(m, m.media.value)
@@ -79,10 +103,8 @@ async def create_post(client, user_id, messages):
                 link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
                 links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
             
-            # Add a one-line gap between each file entry
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
-            
         return posts
 
 # --- (The rest of the helper functions are unchanged and provided for completeness) ---

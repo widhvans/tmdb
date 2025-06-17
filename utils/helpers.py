@@ -16,55 +16,31 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
 def create_clean_label(filename: str) -> str:
-    """
-    Creates a clean, readable label for display in posts.
-    It removes junk but keeps important episode/version info.
-    """
+    """Creates a clean, readable label for display in posts."""
     if not filename: return ""
-    # Remove file extension
     label = re.sub(r'\.\w+$', '', filename)
-    # Replace common delimiters with a single space
     label = re.sub(r'[\._-]', ' ', label)
-    # Remove content in brackets, as it's usually promotional
     label = re.sub(r'\[.*?\]', '', label)
-    # Remove any stray backticks that break markdown
     label = label.replace('`', '')
-    # Collapse multiple spaces into one
     label = re.sub(r'\s+', ' ', label).strip()
     return label
 
 def extract_base_name_and_year(name: str):
-    """
-    Extracts the true base name of a show/movie for matching and poster searches.
-    """
+    """Extracts the true base name of a show/movie for matching and poster searches."""
     if not name: return "Untitled", None
-
-    # Use the clean label function for initial cleaning
     cleaned_name = create_clean_label(name)
-
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
-    if year:
-        cleaned_name = cleaned_name.replace(year, '')
-
-    # Define delimiters that separate the base name from the rest
-    series_delimiters = [
-        r'S\d{1,2}', r'Season\s?\d{1,2}', r'Part\s?\d{1,2}'
-    ]
-    
+    if year: cleaned_name = cleaned_name.replace(year, '')
+    series_delimiters = [r'S\d{1,2}', r'Season\s?\d{1,2}', r'Part\s?\d{1,2}']
     base_name = cleaned_name
     for delimiter in series_delimiters:
         match = re.search(delimiter, cleaned_name, re.I)
         if match:
-            # The base name is everything before the first series delimiter found
             base_name = cleaned_name[:match.start()]
             break
-    
-    # Final cleanup of the extracted base name
     final_base_name = re.sub(r'\s+', ' ', base_name).strip()
-    # Remove episode-specific titles that may be left over
     final_base_name = re.split(r' E\d{1,3}| EP\d{1,3}', final_base_name, flags=re.I)[0].strip()
-
     return (final_base_name, year) if final_base_name else ("Untitled", year)
 
 
@@ -72,10 +48,15 @@ async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return []
 
-    primary_base_name, year = extract_base_name_and_year(getattr(messages[0].media, messages[0].media.value).file_name)
+    # <<< FIX #1: Correctly get the media object from the message, not message.media >>>
+    first_media_obj = getattr(messages[0], messages[0].media.value, None)
+    if not first_media_obj:
+        logger.error("FATAL: Could not get media object from the first message in a batch.")
+        return []
+    primary_base_name, year = extract_base_name_and_year(first_media_obj.file_name)
     
     # Sort files naturally by their full filename for logical order (E01, E02 etc.)
-    messages.sort(key=lambda m: natural_sort_key(getattr(m.media, m.media.value).file_name))
+    messages.sort(key=lambda m: natural_sort_key(getattr(m, m.media.value, None).file_name if getattr(m, m.media.value, None) else ""))
     
     base_caption_header = f"🎬 **{primary_base_name} {f'({year})' if year else ''}**"
     post_poster = await get_poster(primary_base_name, year) if user.get('show_poster', True) else None
@@ -84,8 +65,9 @@ async def create_post(client, user_id, messages):
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        media = messages[0].media
-        # Use the new clean label function
+        # <<< FIX #2: Correctly get the media object for single-file posts >>>
+        media = getattr(messages[0], messages[0].media.value, None)
+        if not media: return []
         file_label = create_clean_label(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
@@ -98,8 +80,9 @@ async def create_post(client, user_id, messages):
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
             links = []
             for m in chunk:
-                media = getattr(m, m.media.value)
-                # Use the new clean label function here as well
+                # <<< FIX #3: Correctly get the media object inside the loop >>>
+                media = getattr(m, m.media.value, None)
+                if not media: continue
                 label = create_clean_label(media.file_name)
                 link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
                 links.append(f"📁 `{label}` - [Click Here]({link})")
@@ -108,6 +91,7 @@ async def create_post(client, user_id, messages):
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
+# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

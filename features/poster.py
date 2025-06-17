@@ -7,6 +7,16 @@ from config import Config
 
 logger = logging.getLogger(__name__)
 
+def generate_search_queries(title: str):
+    """Generates a list of progressively shorter search queries from a title."""
+    words = title.split()
+    queries = []
+    # Generate queries from the full title down to 2 words
+    for i in range(len(words), max(0, min(1, len(words)) - 1), -1):
+        if i > 0:
+            queries.append(' '.join(words[:i]))
+    return list(dict.fromkeys(queries))
+
 async def _find_poster_from_imdb(query: str):
     """Internal function to get the best-guess poster from IMDb for a single query."""
     try:
@@ -25,8 +35,7 @@ async def _find_poster_from_imdb(query: str):
                     movie_soup = BeautifulSoup(await movie_resp.text(), 'html.parser')
                     img_tag = movie_soup.select_one('div[data-testid="hero-media__poster"] img.ipc-image')
                     if img_tag and img_tag.get('src'):
-                        poster_url = img_tag['src'].split('_V1_')[0] + "_V1_FMjpg_UX1000_.jpg"
-                        return poster_url
+                        return img_tag['src'].split('_V1_')[0] + "_V1_FMjpg_UX1000_.jpg"
     except Exception:
         return None
     return None
@@ -50,27 +59,29 @@ async def _find_poster_from_tmdb(query: str, year: str = None):
 
 async def get_poster(base_name: str, year: str = None):
     """
-    The definitive 'waterfall' poster finder. It uses the clean base_name for searching.
+    The definitive 'waterfall' poster finder. It uses the clean base_name 
+    to generate multiple search queries for the highest accuracy.
     """
-    logger.info(f"Poster Search: Starting for base_name='{base_name}', year='{year}'")
+    
+    search_queries = generate_search_queries(base_name)
+    logger.info(f"Waterfall Poster Search: Starting for '{base_name}'. Queries: {search_queries}")
 
-    # Attempt 1: IMDb with Year
-    if year:
-        poster = await _find_poster_from_imdb(f"{base_name} {year}")
-        if poster: logger.info(f"SUCCESS: IMDb with year for '{base_name}'"); return poster
-    
-    # Attempt 2: IMDb without Year
-    poster = await _find_poster_from_imdb(base_name)
-    if poster: logger.info(f"SUCCESS: IMDb without year for '{base_name}'"); return poster
-    
-    # Attempt 3: TMDB with Year
-    if year:
-        poster = await _find_poster_from_tmdb(base_name, year)
-        if poster: logger.info(f"SUCCESS: TMDB with year for '{base_name}'"); return poster
-    
-    # Attempt 4: TMDB without Year
-    poster = await _find_poster_from_tmdb(base_name)
-    if poster: logger.info(f"SUCCESS: TMDB without year for '{base_name}'"); return poster
+    for sq in search_queries:
+        logger.info(f"Trying query: '{sq}'...")
+        
+        # --- IMDb First (User Preference) ---
+        if year:
+            if poster := await _find_poster_from_imdb(f"{sq} {year}"):
+                logger.info(f"SUCCESS: IMDb with year for '{sq}'"); return poster
+        if poster := await _find_poster_from_imdb(sq):
+            logger.info(f"SUCCESS: IMDb without year for '{sq}'"); return poster
+        
+        # --- TMDB Second (API Fallback) ---
+        if year:
+            if poster := await _find_poster_from_tmdb(sq, year):
+                logger.info(f"SUCCESS: TMDB with year for '{sq}'"); return poster
+        if poster := await _find_poster_from_tmdb(sq):
+            logger.info(f"SUCCESS: TMDB without year for '{sq}'"); return poster
 
-    logger.error(f"Poster Search: All attempts failed for base name '{base_name}'.")
+    logger.error(f"Waterfall Search: All attempts failed for base name '{base_name}'.")
     return None

@@ -9,8 +9,8 @@ from database.db import (
     get_user_file_count, add_footer_button, remove_footer_button,
     get_all_user_files, get_paginated_files, search_user_files
 )
-# The old, incorrect import is removed. These are the correct ones:
-from utils.helpers import go_back_button, get_main_menu, create_post, clean_filename, calculate_title_similarity
+# FIXED: Importing the new, correct function name
+from utils.helpers import go_back_button, get_main_menu, create_post, extract_base_name_and_year, calculate_title_similarity
 
 logger = logging.getLogger(__name__)
 ACTIVE_BACKUP_TASKS = set()
@@ -32,7 +32,6 @@ async def safe_edit_message(query, *args, **kwargs):
             pass
 
 # --- (All sub-menu and other settings handlers are unchanged) ---
-# ...
 @Client.on_callback_query(filters.regex(r"^(shortener|poster|fsub)_menu$"))
 async def settings_submenu_handler(client, query):
     user_id = query.from_user.id
@@ -150,23 +149,23 @@ async def start_backup_process(client, query):
 
         await query.message.edit_text("⏳ `Step 2/3:` Intelligently grouping files by similarity...")
         
-        # --- NEW FUZZY BATCHING FOR BACKUP ---
         batches = []
         for doc in all_file_docs:
             if not doc.get('file_name'): continue
-            doc_title, _ = clean_filename(doc['file_name'])
-            if not doc_title: continue
+            # FIXED: Use the new correct function name
+            doc_base_name, _ = extract_base_name_and_year(doc['file_name'])
+            if not doc_base_name: continue
 
-            added_to_existing_batch = False
+            added = False
             for batch in batches:
-                batch_title, _ = clean_filename(batch[0]['file_name'])
-                if calculate_title_similarity(doc_title, batch_title) > 0.85:
+                # FIXED: Use the new correct function name
+                batch_base_name, _ = extract_base_name_and_year(batch[0]['file_name'])
+                if calculate_title_similarity(doc_base_name, batch_base_name) > 0.90: # High threshold for backups
                     batch.append(doc)
-                    added_to_existing_batch = True
+                    added = True
                     break
-            if not added_to_existing_batch:
+            if not added:
                 batches.append([doc])
-        # --- END OF NEW LOGIC ---
 
         total_batches = len(batches)
         await safe_edit_message(query, text=f"✅ `Step 2/3:` Found **{total_batches}** unique posts to create. Starting backup...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Backup", callback_data=f"cancel_backup_{user_id}")]]))
@@ -280,8 +279,8 @@ async def add_channel_prompt(client, query):
             await add_to_list(user_id, ch_type_key, response.forward_from_chat.id)
             await response.reply_text(f"✅ Connected to **{response.forward_from_chat.title}**.", reply_markup=go_back_button(user_id))
         else: await response.reply_text("Not a valid forwarded message.", reply_markup=go_back_button(user_id))
-        if question: await question.delete()
-        if response: await response.delete()
+        if 'question' in locals() and question: await question.delete()
+        if 'response' in locals() and response: await response.delete()
     except asyncio.TimeoutError:
         if 'question' in locals() and question: await safe_edit_message(question, text="Command timed out.")
     except Exception as e:

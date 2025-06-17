@@ -8,22 +8,21 @@ from features.poster import get_poster
 
 logger = logging.getLogger(__name__)
 
-# Max files per post before splitting.
 FILES_PER_POST = 20
 
 def clean_filename(name: str):
     """The master function to clean filenames for poster searching and batching."""
     if not name: return "Untitled", None
     
-    # Remove file extension and invalid characters
+    # Remove file extension
     cleaned_name = re.sub(r'\.\w+$', '', name)
-    cleaned_name = re.sub(r'[:|?*<>"]', '', cleaned_name)
-    
     # Remove all content within brackets and parentheses
     cleaned_name = re.sub(r'\[.*?\]|\(.*?\)|\{.*?\}', '', cleaned_name)
     
-    # Replace common delimiters with spaces
-    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name)
+    # Aggressively remove symbols, replacing them and common delimiters with a space
+    cleaned_name = re.sub(r'[\._\-\|*&^%$#@!()]', ' ', cleaned_name)
+    # Remove any other non-alphanumeric characters (except spaces)
+    cleaned_name = re.sub(r'[^A-Za-z0-9 ]', '', cleaned_name)
     
     # Extract year
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
@@ -35,24 +34,14 @@ def clean_filename(name: str):
     for tag in tags:
         cleaned_name = re.sub(r'\b' + tag + r'\b', '', cleaned_name, flags=re.I)
     
-    # Final cleanup
+    # Final cleanup of extra spaces
     final_title = re.sub(r'\s+', ' ', cleaned_name).strip()
     
-    # Fallback to a simpler clean if the above removes everything
-    if not final_title:
-        final_title = re.sub(r'\.\w+$', '', name).replace(".", " ")
-        # Try to re-extract year from the original name if the complex clean failed
-        year_match = re.search(r'\b(19|20)\d{2}\b', final_title)
-        year = year_match.group(0) if year_match else None
-
-    return final_title, year
+    return (final_title, year) if final_title else (re.sub(r'\.\w+$', '', name).replace(".", " "), None)
 
 
 async def create_post(client, user_id, messages):
-    """
-    Creates post(s) with smart formatting and automatic splitting.
-    Returns a list of tuples, where each tuple is a post: (poster, caption, footer).
-    """
+    """Creates post(s) with smart formatting and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
@@ -65,19 +54,17 @@ async def create_post(client, user_id, messages):
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
-    # Smart Formatting: Single file (detailed) vs Multi-file (compact)
     if len(messages) == 1:
         media = getattr(messages[0], messages[0].media.value)
+        # Use clean_filename to get a clean label without symbols for the post
+        file_label, _ = clean_filename(media.file_name)
         file_size_str = format_bytes(media.file_size)
-        file_label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         
-        caption_body = f"📁 `{file_label}` ({file_size_str})\n\n[🔗 Click Here to Get File]({link})"
+        caption_body = f"📁 `{file_label or media.file_name}` ({file_size_str})\n\n[🔗 Click Here to Get File]({link})"
         final_caption = f"{base_caption_header}\n\n{caption_body}"
         
         return [(post_poster, final_caption, footer_keyboard)]
-    
-    # Automatic Post Splitting for large batches
     else:
         posts, total = [], len(messages)
         num_posts = (total + FILES_PER_POST - 1) // FILES_PER_POST
@@ -88,15 +75,17 @@ async def create_post(client, user_id, messages):
             links = []
             for m in chunk:
                 media = getattr(m, m.media.value)
-                label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
+                label, _ = clean_filename(media.file_name)
                 link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-                links.append(f"📁 `{label}` - [Click Here]({link})")
-
-            final_caption = f"{header}\n\n" + "\n".join(links)
+                links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
+            
+            # Add a one-line gap between each file entry
+            final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
             
         return posts
 
+# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)
@@ -106,18 +95,9 @@ async def get_main_menu(user_id):
     buttons = [
         [InlineKeyboardButton("➕ Manage Auto Post", callback_data="manage_post_ch")],
         [InlineKeyboardButton("🗃️ Manage Index DB", callback_data="manage_db_ch")],
-        [
-            InlineKeyboardButton(shortener_text, callback_data="shortener_menu"),
-            InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")
-        ],
-        [
-            InlineKeyboardButton("🔗 Set Filename Link", callback_data="set_filename_link"),
-            InlineKeyboardButton("👣 Footer Buttons", callback_data="manage_footer")
-        ],
-        [
-            InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"),
-            InlineKeyboardButton("📂 My Files", callback_data="my_files_1")
-        ],
+        [InlineKeyboardButton(shortener_text, callback_data="shortener_menu"), InlineKeyboardButton("🔄 Backup Links", callback_data="backup_links")],
+        [InlineKeyboardButton("🔗 Set Filename Link", callback_data="set_filename_link"), InlineKeyboardButton("👣 Footer Buttons", callback_data="manage_footer")],
+        [InlineKeyboardButton("🖼️ IMDb Poster", callback_data="poster_menu"), InlineKeyboardButton("📂 My Files", callback_data="my_files_1")],
         [InlineKeyboardButton(fsub_text, callback_data="set_fsub")],
         [InlineKeyboardButton("❓ How to Download", callback_data="set_download")]
     ]
@@ -133,8 +113,7 @@ def format_bytes(size):
     if not isinstance(size, (int, float)): return "N/A"
     power = 1024; n = 0; power_labels = {0: 'B', 1: 'KB', 2: 'MB', 3: 'GB', 4: 'TB'}
     while size > power and n < len(power_labels) - 1:
-        size /= power
-        n += 1
+        size /= power; n += 1
     return f"{size:.2f} {power_labels[n]}"
 
 async def get_file_raw_link(message):

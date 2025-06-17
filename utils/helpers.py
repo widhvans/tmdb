@@ -22,18 +22,15 @@ def extract_base_name_and_year(name: str):
     """
     if not name: return "Untitled", None
 
-    # Initial cleanup
-    cleaned_name = re.sub(r'\.\w+$', '', name) # Remove extension
-    cleaned_name = re.sub(r'\[.*?\]', '', cleaned_name) # Remove content in brackets
-    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name) # Replace delimiters
+    cleaned_name = re.sub(r'\.\w+$', '', name)
+    cleaned_name = re.sub(r'\[.*?\]', '', cleaned_name)
+    cleaned_name = re.sub(r'[\._-]', ' ', cleaned_name)
 
-    # Extract year first, as it can be a strong delimiter
     year_match = re.search(r'\b(19|20)\d{2}\b', cleaned_name)
     year = year_match.group(0) if year_match else None
     if year:
         cleaned_name = cleaned_name.replace(year, '')
 
-    # Define delimiters that separate the base name from the rest
     series_delimiters = [
         r'S\d{1,2}E\d{1,3}', r'S\d{1,2}', r'Season\s?\d{1,2}',
         r'E\d{1,3}', r'EP\d{1,3}', 'Part\s?\d{1,2}'
@@ -43,11 +40,9 @@ def extract_base_name_and_year(name: str):
     for delimiter in series_delimiters:
         match = re.search(delimiter, cleaned_name, re.I)
         if match:
-            # The base name is everything before the first series delimiter found
             base_name = cleaned_name[:match.start()]
             break
 
-    # Final cleanup of the extracted base name
     tags = ['10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin', '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', 'COMPLETE', 'WEB-SERIES']
     for tag in tags:
         base_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', base_name, flags=re.I)
@@ -61,10 +56,21 @@ async def create_post(client, user_id, messages):
     user = await get_user(user_id)
     if not user: return []
 
-    primary_base_name, year = extract_base_name_and_year(getattr(messages[0].media, messages[0].media.value).file_name)
+    # ### CRITICAL FIX HERE ###
+    # The 'getattr' call now correctly uses messages[0] as the source object, not messages[0].media
+    first_media_obj = getattr(messages[0], messages[0].media.value, None)
+    if not first_media_obj: 
+        logger.error("Could not get media object from the first message in batch.")
+        return []
+    primary_base_name, year = extract_base_name_and_year(first_media_obj.file_name)
     
     def similarity_sorter(msg):
-        return natural_sort_key(getattr(msg.media, msg.media.value).file_name)
+        # ### CRITICAL FIX HERE ###
+        # This was also corrected to prevent the same error during sorting.
+        media_obj = getattr(msg, msg.media.value, None)
+        if not media_obj:
+            return (1.0, "") # Push messages without media to the end
+        return natural_sort_key(media_obj.file_name)
 
     messages.sort(key=similarity_sorter)
     
@@ -75,7 +81,10 @@ async def create_post(client, user_id, messages):
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
     if len(messages) == 1:
-        media = messages[0].media
+        # ### CRITICAL FIX HERE ###
+        media = getattr(messages[0], messages[0].media.value, None)
+        if not media: return []
+
         file_label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
@@ -86,11 +95,21 @@ async def create_post(client, user_id, messages):
         for i in range(num_posts):
             chunk = messages[i*FILES_PER_POST:(i+1)*FILES_PER_POST]
             header = f"{base_caption_header} (Part {i+1}/{num_posts})" if num_posts > 1 else base_caption_header
-            links = [f"📁 `{re.sub(r'\[@.*?\]', '', m.media.file_name).strip()}` - [Click Here](http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id})" for m in chunk]
+            links = []
+            for m in chunk:
+                # ### CRITICAL FIX HERE ###
+                media = getattr(m, m.media.value, None)
+                if not media: continue
+                
+                label = re.sub(r'\[@.*?\]', '', media.file_name).strip()
+                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id}"
+                links.append(f"📁 `{label}` - [Click Here]({link})")
+            
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
+# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

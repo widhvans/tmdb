@@ -16,7 +16,7 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     return fuzz.token_sort_ratio(title1, title2) / 100.0
 
 def clean_filename(name: str):
-    """The master function to clean filenames for poster searching and batching."""
+    """The master function to clean filenames, now with more tags."""
     if not name: return "Untitled", None
     
     cleaned_name = re.sub(r'\.\w+$', '', name)
@@ -28,31 +28,33 @@ def clean_filename(name: str):
     year = year_match.group(0) if year_match else None
     if year: cleaned_name = cleaned_name.replace(year, '')
         
-    tags = ['1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES']
+    # More tags added based on examples for better cleaning
+    tags = [
+        '10bit', '6ch', '5 1', 'ds4k', 'sony', 'dd', 'unrated', 'dc', 'hev', 'esub', 'dual', 'au', 'hin',
+        '1080p', '720p', '480p', '2160p', '4k', 'HD', 'FHD', 'UHD', 'BluRay', 'WEBRip', 'WEB-DL', 
+        'HDRip', 'x264', 'x265', 'HEVC', 'AAC', 'Dual Audio', 'Hindi', 'English', 'Esubs', 'Dubbed', 
+        r'S\d+E\d+', r'S\d+', r'Season\s?\d+', r'Part\s?\d+', r'E\d+', r'EP\d+', 'COMPLETE', 'WEB-SERIES'
+    ]
     for tag in tags:
-        cleaned_name = re.sub(r'\b' + tag + r'\b', '', cleaned_name, flags=re.I)
+        cleaned_name = re.sub(r'\b' + re.escape(tag) + r'\b', '', cleaned_name, flags=re.I)
     
     final_title = re.sub(r'\s+', ' ', cleaned_name).strip()
-    
     return (final_title, year) if final_title else (re.sub(r'\.\w+$', '', name).replace(".", " "), None)
+
 
 async def create_post(client, user_id, messages):
     """Creates post(s) with smart formatting, similarity sorting, and automatic splitting."""
     user = await get_user(user_id)
     if not user: return []
 
-    # Get the media object from the first message to determine the primary title
-    first_media_obj = getattr(messages[0], messages[0].media.value, None)
-    if not first_media_obj: return [] # Safety check
-    primary_title, year = clean_filename(first_media_obj.file_name)
+    # The title of the first message in the batch determines the primary title
+    primary_title, year = clean_filename(getattr(messages[0].media, messages[0].media.value).file_name)
     
-    # NEW SORTING LOGIC: Sort by similarity to the primary title, then by natural filename sort
+    # Sort by similarity to the primary title, then by natural filename sort
     def similarity_sorter(msg):
-        media_obj = getattr(msg, msg.media.value, None)
-        if not media_obj: return (1.0, "") # Push messages without media to the end
-        title, _ = clean_filename(media_obj.file_name)
+        title, _ = clean_filename(getattr(msg.media, msg.media.value).file_name)
         similarity_score = 1.0 - calculate_title_similarity(primary_title, title)
-        natural_key = natural_sort_key(media_obj.file_name)
+        natural_key = natural_sort_key(getattr(msg.media, msg.media.value).file_name)
         return (similarity_score, natural_key)
 
     messages.sort(key=similarity_sorter)
@@ -63,18 +65,12 @@ async def create_post(client, user_id, messages):
     footer_buttons = user.get('footer_buttons', [])
     footer_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(btn['name'], url=btn['url'])] for btn in footer_buttons]) if footer_buttons else None
     
-    # Smart Formatting for single file
     if len(messages) == 1:
-        # FIXED: Correctly get the media object using getattr
-        media = getattr(messages[0], messages[0].media.value, None)
-        if not media: return []
-        
+        media = messages[0].media
         file_label, _ = clean_filename(media.file_name)
         link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
         caption_body = f"📁 `{file_label or media.file_name}` ({format_bytes(media.file_size)})\n\n[🔗 Click Here to Get File]({link})"
         return [(post_poster, f"{base_caption_header}\n\n{caption_body}", footer_keyboard)]
-    
-    # Smart Formatting and Splitting for multiple files
     else:
         posts, total = [], len(messages)
         num_posts = (total + FILES_PER_POST - 1) // FILES_PER_POST
@@ -84,19 +80,14 @@ async def create_post(client, user_id, messages):
             
             links = []
             for m in chunk:
-                # FIXED: Correctly get the media object using getattr
-                media = getattr(m, m.media.value, None)
-                if not media: continue
-                
-                label, _ = clean_filename(media.file_name)
-                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{media.file_unique_id}"
-                links.append(f"📁 `{label or media.file_name}` - [Click Here]({link})")
+                label, _ = clean_filename(m.media.file_name)
+                link = f"http://{Config.VPS_IP}:{Config.VPS_PORT}/get/{m.media.file_unique_id}"
+                links.append(f"📁 `{label or m.media.file_name}` - [Click Here]({link})")
             
             final_caption = f"{header}\n\n" + "\n\n".join(links)
             posts.append((post_poster, final_caption, footer_keyboard))
         return posts
 
-# --- (The rest of the helper functions are unchanged and provided for completeness) ---
 
 async def get_main_menu(user_id):
     user_settings = await get_user(user_id)

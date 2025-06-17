@@ -7,8 +7,8 @@ from pyromod import Client
 from aiohttp import web
 from config import Config
 from database.db import get_user, save_file_data, get_owner_db_channel
-from utils.helpers import create_post, extract_base_name_and_year
-from features.poster import get_poster_id
+# FIXED: Importing the correct function name
+from utils.helpers import create_post, get_clean_title_and_year, calculate_title_similarity
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", handlers=[logging.FileHandler("bot.log"), logging.StreamHandler()])
@@ -82,7 +82,7 @@ class Bot(Client):
                 await self.send_with_protection(sent_msg.delete)
 
     async def file_processor_worker(self):
-        logger.info("Poster-Driven Sorter Worker started.")
+        logger.info("File Sorter Worker started.")
         while True:
             try:
                 message, user_id = await self.file_queue.get()
@@ -94,26 +94,28 @@ class Bot(Client):
                 media_object = getattr(copied_message, copied_message.media.value, None)
                 if not media_object or not hasattr(media_object, 'file_name'): continue
                 
-                base_name, year = extract_base_name_and_year(media_object.file_name)
-                if not base_name: continue
+                # FIXED: Use the correct function name from helpers.py
+                clean_title, _ = get_clean_title_and_year(media_object.file_name)
+                if not clean_title: continue
 
-                poster_key = await get_poster_id(base_name, year)
-                if not poster_key:
-                    poster_key = f"title_{base_name.lower()}"
-                
+                best_match_id, highest_similarity = None, 0.90
                 self.open_batches.setdefault(user_id, {})
+                for batch_id, data in self.open_batches[user_id].items():
+                    similarity = calculate_title_similarity(clean_title, data['clean_title'])
+                    if similarity > highest_similarity:
+                        highest_similarity, best_match_id = similarity, batch_id
                 
-                if poster_key in self.open_batches[user_id]:
-                    batch = self.open_batches[user_id][poster_key]
+                if best_match_id:
+                    batch = self.open_batches[user_id][best_match_id]
                     batch['messages'].append(copied_message)
                     batch['last_added'] = time.time()
-                    logger.info(f"Added to batch with key '{poster_key}'")
+                    logger.info(f"Added to batch '{batch['clean_title']}' (Similarity: {highest_similarity:.2f})")
                 else:
-                    new_batch_id = poster_key
+                    new_batch_id = copied_message.id
                     self.open_batches[user_id][new_batch_id] = {
-                        'messages': [copied_message], 'last_added': time.time()
+                        'clean_title': clean_title, 'messages': [copied_message], 'last_added': time.time()
                     }
-                    logger.info(f"Created new batch with key '{new_batch_id}'")
+                    logger.info(f"Created new batch for '{clean_title}'")
             except Exception as e: logger.exception(f"CRITICAL Error in file_processor_worker: {e}")
             finally: self.file_queue.task_done()
     

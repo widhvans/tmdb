@@ -9,8 +9,8 @@ from database.db import (
     get_user_file_count, add_footer_button, remove_footer_button,
     get_all_user_files, get_paginated_files, search_user_files
 )
-# FIXED: Importing the new, correct function 'get_clean_title_and_year'
-from utils.helpers import go_back_button, get_main_menu, create_post, get_clean_title_and_year, calculate_title_similarity
+# This import is now corrected to use the proper function names from helpers.py
+from utils.helpers import go_back_button, get_main_menu, create_post, extract_base_name_and_year, calculate_title_similarity
 
 logger = logging.getLogger(__name__)
 ACTIVE_BACKUP_TASKS = set()
@@ -31,7 +31,6 @@ async def safe_edit_message(query, *args, **kwargs):
         except:
             pass
 
-# --- (All sub-menu and other settings handlers are unchanged) ---
 @Client.on_callback_query(filters.regex(r"^(shortener|poster|fsub)_menu$"))
 async def settings_submenu_handler(client, query):
     user_id = query.from_user.id
@@ -152,15 +151,14 @@ async def start_backup_process(client, query):
         batches = []
         for doc in all_file_docs:
             if not doc.get('file_name'): continue
-            # FIXED: Use the new correct function name
-            doc_clean_title, _ = get_clean_title_and_year(doc['file_name'])
-            if not doc_clean_title: continue
+            
+            doc_base_name, _ = extract_base_name_and_year(doc['file_name'])
+            if not doc_base_name: continue
 
             added = False
             for batch in batches:
-                # FIXED: Use the new correct function name
-                batch_clean_title, _ = get_clean_title_and_year(batch[0]['file_name'])
-                if calculate_title_similarity(doc_clean_title, batch_clean_title) > 0.90:
+                batch_base_name, _ = extract_base_name_and_year(batch[0]['file_name'])
+                if calculate_title_similarity(doc_base_name, batch_base_name) > 0.90:
                     batch.append(doc)
                     added = True
                     break
